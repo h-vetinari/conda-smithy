@@ -16,7 +16,7 @@
 
 **Fixed:**
 
-* Fixed docker images not being found by adding `--platform` argument to `docker pull`. (#2730 via #2732)
+* Fixed docker images not being found by adding `--platform` argument to `docker pull` and `docker run`. (#2730 via #2732)
 
 **Security:**
 

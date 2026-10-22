@@ -3459,3 +3459,131 @@ def test_get_migrations_in_dir_timestamp_formats(tmp_path):
         for name in ("epoch", "zulu", "offset")
     ]
     assert keys[0] == keys[1] == keys[2] == {("zlib.yaml", 1790912420.0)}
+
+
+@pytest.mark.parametrize(
+    "build_platform, expected",
+    [
+        (None, "linux-aarch64"),  # emulated on an x86_64 runner
+        ("linux_64", "linux-64"),  # cross-compiled: the image is the build platform's
+    ],
+)
+def test_build_platform_in_ci_support(py_recipe, jinja_env, build_platform, expected):
+    forge_dir = py_recipe.recipe
+    with open(Path(forge_dir, "conda-forge.yml"), "a") as f:
+        f.write(textwrap.dedent("""\
+            provider:
+              linux_64: azure
+              linux_aarch64: azure
+              osx_64: azure
+        """))
+        if build_platform:
+            f.write(f"build_platform:\n  linux_aarch64: {build_platform}\n")
+
+    config = configure_feedstock._load_forge_config(
+        forge_dir, "recipe/default_config.yaml"
+    )
+    configure_feedstock.render_azure(
+        jinja_env=jinja_env, forge_config=config, forge_dir=forge_dir
+    )
+
+    ci_support = Path(forge_dir, ".ci_support")
+
+    def build_platforms(prefix):
+        return {
+            tuple(yaml.safe_load(p.read_text()).get("build_platform", []))
+            for p in ci_support.glob(f"{prefix}*.yaml")
+        }
+
+    assert build_platforms("linux_64") == {("linux-64",)}
+    assert build_platforms("linux_aarch64") == {(expected,)}
+    # only linux needs it (docker); osx configs must not gain the key
+    assert build_platforms("osx_64") == {()}
+
+
+def _run_docker_build(tmp_path, jinja_env, ci_support_yaml):
+    scripts = tmp_path / ".scripts"
+    scripts.mkdir()
+    (scripts / "logging_utils.sh").write_text(
+        "startgroup() { :; }\nendgroup() { :; }\n"
+    )
+    script = scripts / "run_docker_build.sh"
+    script.write_text(
+        jinja_env.get_template("run_docker_build.sh.tmpl").render(
+            docker={
+                "executable": "docker",
+                "fallback_image": "quay.io/condaforge/linux-anvil-x86_64:alma9",
+                "command": "bash",
+            },
+            recipe_dir="recipe",
+            secrets=[],
+        )
+    )
+    (tmp_path / "recipe").mkdir()
+    (tmp_path / ".ci_support").mkdir()
+    (tmp_path / ".ci_support" / "linux_test_.yaml").write_text(ci_support_yaml)
+
+    # stub docker: log every call; on `run`, touch the canary the script checks for
+    log = tmp_path / "docker.log"
+    stub = tmp_path / "docker"
+    stub.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        echo "$@" >> {log}
+        if [[ "$1" == run ]]; then
+            touch "build_artifacts/conda-forge-build-done-${{CONFIG}}"
+        fi
+    """))
+    stub.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "DOCKER_EXECUTABLE": str(stub),
+            "CONFIG": "linux_test_",
+            "DOCKER_IMAGE": "quay.io/condaforge/linux-anvil-x86_64:alma9",
+            "CI": "1",
+            "sha": "0" * 40,
+        },
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return proc, calls
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="bash script")
+@pytest.mark.parametrize(
+    "build_platform, expected",
+    [
+        ("linux-64", "linux/amd64"),
+        ("linux-aarch64", "linux/aarch64"),
+        ("linux-ppc64le", "linux/ppc64le"),
+    ],
+)
+def test_run_docker_build_platform_pull(tmp_path, jinja_env, build_platform, expected):
+    proc, calls = _run_docker_build(
+        tmp_path, jinja_env, f"build_platform:\n- {build_platform}\n"
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    pull = next(c for c in calls if c.startswith("pull "))
+    assert f"--platform {expected}" in pull
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="bash script")
+def test_run_docker_build_platform_missing_key(tmp_path, jinja_env):
+    proc, calls = _run_docker_build(tmp_path, jinja_env, "docker_image:\n- foo\n")
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    pull = next(c for c in calls if c.startswith("pull "))
+    assert "--platform" not in pull
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="bash script")
+def test_run_docker_build_platform_run(tmp_path, jinja_env):
+    proc, calls = _run_docker_build(
+        tmp_path, jinja_env, "build_platform:\n- linux-ppc64le\n"
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    run = next(c for c in calls if c.startswith("run "))
+    assert "--platform linux/ppc64le" in run
