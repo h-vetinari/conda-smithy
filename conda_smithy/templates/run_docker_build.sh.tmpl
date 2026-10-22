@@ -126,7 +126,7 @@ export IS_PR_BUILD="${IS_PR_BUILD:-False}"
 
 ${DOCKER_EXECUTABLE} pull ${DOCKER_PLATFORM_ARGS} "${DOCKER_IMAGE}"
 
-${DOCKER_EXECUTABLE} run ${DOCKER_RUN_ARGS} \
+${DOCKER_EXECUTABLE} run ${DOCKER_PLATFORM_ARGS} ${DOCKER_RUN_ARGS} \
            -v "${RECIPE_ROOT}":/home/conda/recipe_root:rw${VOLUME_SUFFIX},delegated \
            -v "${FEEDSTOCK_ROOT}":/home/conda/feedstock_root:rw${VOLUME_SUFFIX},delegated \
            -e BUILD_OUTPUT_ID \
