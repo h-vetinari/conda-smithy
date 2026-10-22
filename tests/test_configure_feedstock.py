@@ -3577,3 +3577,13 @@ def test_run_docker_build_platform_missing_key(tmp_path, jinja_env):
     assert proc.returncode == 0, proc.stderr[-1500:]
     pull = next(c for c in calls if c.startswith("pull "))
     assert "--platform" not in pull
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="bash script")
+def test_run_docker_build_platform_run(tmp_path, jinja_env):
+    proc, calls = _run_docker_build(
+        tmp_path, jinja_env, "build_platform:\n- linux-ppc64le\n"
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    run = next(c for c in calls if c.startswith("run "))
+    assert "--platform linux/ppc64le" in run
